@@ -4,6 +4,7 @@
 #include <efi.h>
 #include <efivar.h>
 #include <openssl/bio.h>
+#include <openssl/err.h>
 #include <openssl/objects.h>
 #include <openssl/pkcs7.h>
 #include <openssl/x509.h>
@@ -21,64 +22,6 @@
 #include "pe.h"
 #include "wincert.h"
 
-struct _cert_list_entry;
-typedef struct _cert_list_entry {
-	uint8_t *cert;
-	size_t size;
-	struct _cert_list_entry *next;
-} cert_list_entry;
-
-static void
-add_cert(cert_list_entry **db, int fd)
-{
-	struct stat sb;
-	fstat(fd, &sb);
-
-	void *addr = mmap(NULL, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-	if (!addr)
-		err(1, "verify");
-
-	void *cert = malloc(sb.st_size);
-	if (!cert)
-		err(1, "verify");
-
-	memcpy(cert, addr, sb.st_size);
-	munmap(addr, sb.st_size);
-
-	cert_list_entry *cle = malloc(sizeof (*cle));
-	if (!cle)
-		err(1, "verify");
-
-	cle->cert = cert;
-	cle->size = sb.st_size;
-	cle->next = *db;
-	*db = cle;
-}
-
-static PKCS7 *
-make_pkcs7(uint8_t *bin, size_t size)
-{
-	WIN_CERTIFICATE_EFI_PKCS *cert = NULL;
-	size_t cert_size = 0;
-	int rc = get_data_dictionary(bin, size, &cert, &cert_size);
-	if (rc < 0)
-		exit(1);
-	
-	PKCS7 *Pkcs7 = d2i_PKCS7(NULL, (const unsigned char **)&cert->CertData,
-				cert_size);
-	if (!Pkcs7) {
-		fprintf(stderr, "d2i_PKCS7()\n");
-		exit(1);
-	}
-
-	if (!PKCS7_type_is_signed(Pkcs7)) {
-		fprintf(stderr, "PKCS7 data is not signed.  WTH?\n");
-		exit(1);
-	}
-
-	return Pkcs7;
-}
-
 int
 main(int argc, char *argv[])
 {
@@ -87,29 +30,11 @@ main(int argc, char *argv[])
 		exit(1);
 	}
 
+	OpenSSL_add_all_algorithms();
+
 	int binfd = open(argv[1], O_RDONLY);
 	if (binfd < 0)
 		err(1, "verify: %s", argv[1]);
-
-	cert_list_entry *certdb = NULL;
-	for (int i = 2; argv[i] != NULL; i++) {
-		int certfd = open(argv[2], O_RDONLY);
-		if (certfd < 0)
-			err(1, "verify: %s", argv[i]);
-		add_cert(&certdb, certfd);
-		close(certfd);
-	}
-
-	if (!certdb) {
-		fprintf(stderr, "verify: no trusted certificates\n");
-		exit(1);
-	}
-
-	struct stat sb;
-	fstat(binfd, &sb);
-	void *bin = mmap(NULL, sb.st_size, PROT_READ, MAP_PRIVATE, binfd, 0);
-
-	PKCS7 *Pkcs7 = make_pkcs7(bin, sb.st_size);
 
 	X509_STORE *CertStore = X509_STORE_new();
 	if (!CertStore) {
@@ -117,19 +42,32 @@ main(int argc, char *argv[])
 		exit(1);
 	}
 
-	cert_list_entry *cle = certdb;
-	while (cle) {
+
+	for (int i = 2; argv[i] != NULL; i++) {
+		int fd = open(argv[i], O_RDONLY);
+		if (fd < 0)
+			err(1, "verify: %s", argv[i]);
+		printf("adding cert from \"%s\"\n", argv[i]);
+
+		uint8_t *cert;
+		struct stat sb;
+
+		fstat(fd, &sb);
+		cert = mmap(NULL, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+
 		BIO *CertBio = BIO_new(BIO_s_mem());
 		if (!CertBio) {
 			fprintf(stderr, "BIO_new()\n");
 			exit(1);
 		}
-		
-		int rc = BIO_write (CertBio, cle->cert, cle->size);
+
+		int rc = BIO_write (CertBio, cert, sb.st_size);
 		if (rc <= 0) {
 			fprintf(stderr, "BIO_write()\n");
 			exit(1);
 		}
+
+		munmap(cert, sb.st_size);
 		X509 *Cert = d2i_X509_bio(CertBio, NULL);
 		if (!Cert) {
 			fprintf(stderr, "d2i_X509_bio()\n");
@@ -140,11 +78,38 @@ main(int argc, char *argv[])
 			fprintf(stderr, "X509_STORE_add_cert()\n");
 			exit(1);
 		}
+
+		close(fd);
 	}
 
-		CertStore->verify_cb = X509VerifyCb;
+	struct stat sb;
+	fstat(binfd, &sb);
+	void *bin = mmap(NULL, sb.st_size, PROT_READ, MAP_PRIVATE, binfd, 0);
 
+	PE_COFF_LOADER_IMAGE_CONTEXT context;
+	int rc = read_header(bin, sb.st_size, &context);
+	if (rc < 0) {
+		fprintf(stderr, "read_header(): %m\n");
+		exit(1);
+	}
 
+	PKCS7 *Pkcs7 = make_pkcs7(&context, bin, sb.st_size);
+
+	UINT8 sha256hash[32];
+
+	rc = generate_hash(bin, sb.st_size, &context, sha256hash);
+	if (rc < 0) {
+		fprintf(stderr, "you can't handle a hash\n");
+		exit(1);
+	}
+
+	CertStore->verify_cb = X509VerifyCb;
+	rc = verify_pkcs7(Pkcs7, sha256hash, 32);
+	if (rc < 0) {
+		fprintf(stderr, "verify failed!\n");
+		exit(1);
+	}
+	printf("Image verifies correctly\n");
 
 	return 0;
 }

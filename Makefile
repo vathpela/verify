@@ -12,7 +12,7 @@ verify : verify.o pe.o crypto.o
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 verify.o : verify.c wincert.h pe.h crypto.h
-pe.o : pe.c wincert.h pe_int.h pe.h
+pe.o : pe.c wincert.h PeImage.h pe.h
 crypto.o : crypto.h
 
 %.o : %.c
