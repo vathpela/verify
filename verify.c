@@ -31,6 +31,8 @@ main(int argc, char *argv[])
 	}
 
 	OpenSSL_add_all_algorithms();
+	ERR_load_PKCS7_strings();
+	ERR_load_crypto_strings();
 
 	int binfd = open(argv[1], O_RDONLY);
 	if (binfd < 0)
@@ -93,19 +95,14 @@ main(int argc, char *argv[])
 		exit(1);
 	}
 
-	uint8_t *cert = NULL;
-	size_t cert_size = 0;
-	PKCS7 *Pkcs7 = make_pkcs7(&context, &cert, &cert_size, bin, sb.st_size);
-
 	UINT8 sha256hash[32];
-
 	rc = generate_hash(bin, sb.st_size, &context, sha256hash);
 	if (rc < 0) {
 		fprintf(stderr, "you can't handle a hash\n");
 		exit(1);
 	}
 
-	rc = verify_pkcs7(Pkcs7, sha256hash, 32, cert, cert_size, CertStore);
+	rc = verify_pkcs7(&context, bin, sb.st_size, sha256hash, 32, CertStore);
 	if (!rc) {
 		fprintf(stderr, "verify failed!\n");
 		exit(1);

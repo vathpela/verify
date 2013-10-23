@@ -5,6 +5,7 @@
 #include <limits.h>
 #include <openssl/bio.h>
 #include <openssl/err.h>
+#include <openssl/evp.h>
 #include <openssl/objects.h>
 #include <openssl/pkcs7.h>
 #include <openssl/sha.h>
@@ -16,6 +17,14 @@
 #include "crypto.h"
 #include "pe.h"
 #include "wincert.h"
+
+static void
+dumpbuf(void *buf, size_t len)
+{
+	int fd = open("tmp", O_CREAT|O_TRUNC|O_WRONLY, 0600);
+	write(fd, buf, len);
+	close(fd);
+}
 
 void
 print_hex(uint8_t *data, size_t data_size)
@@ -216,25 +225,39 @@ if (Obj != NULL) {
 return Status;
 }
 
-PKCS7 *
-make_pkcs7(PE_COFF_LOADER_IMAGE_CONTEXT *context,
-	uint8_t **cert_r, size_t *cert_size_r,
-	uint8_t *bin, size_t size)
+int
+verify_pkcs7(PE_COFF_LOADER_IMAGE_CONTEXT *context,
+	uint8_t *bin, size_t bin_size,
+	uint8_t *ImageHash, size_t HashSize,
+	X509_STORE *CertStore)
 {
-	WIN_CERTIFICATE_EFI_PKCS *cert = NULL;
+
+	EVP_add_digest(EVP_md5());
+	EVP_add_digest(EVP_sha1());
+	EVP_add_digest_alias(SN_sha1WithRSAEncryption, SN_sha1WithRSA);
+	EVP_add_digest(EVP_sha256());
+
+	int rc;
+	WIN_CERTIFICATE_EFI_PKCS *efi_pkcs = NULL;
+	void *cert;
 	size_t cert_size = 0;
 
 	if (context->SecDir->Size != 0) {
-		cert = ImageAddress(bin, size, context->SecDir->VirtualAddress);
+		efi_pkcs = ImageAddress(bin, bin_size,
+					context->SecDir->VirtualAddress);
 
-		if (!cert) {
+		if (!efi_pkcs) {
 			fprintf(stderr, "signature is at invalid offset\n");
 			exit(1);
 		}
-		cert_size = context->SecDir->Size - sizeof (cert->Hdr);
+#if 0
+		printf("SecDir size: %d\n", context->SecDir->Size);
+		printf("Hdr.dwLength: %d\n", efi_pkcs->Hdr.dwLength);
+		printf("sizeof(efi_pkcs->Hdr): %lu\n", sizeof(efi_pkcs->Hdr));
+#endif
+		cert = &efi_pkcs->CertData;
+		cert_size = efi_pkcs->Hdr.dwLength - sizeof (efi_pkcs->Hdr);
 	}
-	*cert_r = (uint8_t *)&cert->CertData;
-	*cert_size_r = cert_size;
 
 	BIO *Pkcs7Bio = BIO_new(BIO_s_mem());
 	if (!Pkcs7Bio) {
@@ -242,7 +265,13 @@ make_pkcs7(PE_COFF_LOADER_IMAGE_CONTEXT *context,
 		exit(1);
 	}
 
-	int rc = BIO_write(Pkcs7Bio, &cert->CertData, cert_size);
+	rc = BIO_write(Pkcs7Bio, cert, cert_size);
+	if (!rc) {
+		char errbuf[120];
+		unsigned long err = ERR_get_error();
+		ERR_error_string(err, errbuf);
+		printf("BIO_write: %s\n", errbuf);
+	}
 
 	PKCS7 *Pkcs7 = d2i_PKCS7_bio(Pkcs7Bio, NULL);
 	if (!Pkcs7) {
@@ -255,14 +284,6 @@ make_pkcs7(PE_COFF_LOADER_IMAGE_CONTEXT *context,
 		exit(1);
 	}
 
-
-	return Pkcs7;
-}
-
-int
-verify_pkcs7(PKCS7 *Pkcs7, uint8_t *ImageHash, size_t HashSize,
-		uint8_t *cert, size_t cert_size, X509_STORE *CertStore)
-{
 	UINT8 *SpcIndirectDataOid;
 	UINT8 mSpcIndirectOidValue[] = {
 		0x2B, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x01, 0x04
@@ -275,12 +296,15 @@ verify_pkcs7(PKCS7 *Pkcs7, uint8_t *ImageHash, size_t HashSize,
 		exit(1);
 	}
 
-	UINT8 Asn1Byte;
 	UINTN ContentSize;
 	UINT8 *SpcIndirectDataContent;
 
 	SpcIndirectDataContent = (UINT8 *)(Pkcs7->d.sign->contents->d.other->value.asn1_string->data);
+	ContentSize = Pkcs7->d.sign->contents->d.other->value.asn1_string->length;
 
+	dumpbuf(SpcIndirectDataContent, ContentSize);
+
+	UINT8 Asn1Byte;
 	Asn1Byte = *(SpcIndirectDataContent + 1);
 	if ((Asn1Byte & 0x80) == 0) {
 		ContentSize = (UINTN) (Asn1Byte & 0x7F);
@@ -302,26 +326,44 @@ verify_pkcs7(PKCS7 *Pkcs7, uint8_t *ImageHash, size_t HashSize,
 		exit(1);
 	}
 
-#if 0
 	BOOLEAN Wrapped;
 	UINT8 *SignedData;
 	UINTN SignedDataSize;
 	WrapPkcs7Data(cert, cert_size, &Wrapped, &SignedData, &SignedDataSize);
-#endif
 
 	CertStore->verify_cb = X509VerifyCb;
 
+	uint8_t *temp = SignedData;
+	BIO *anotherBio = BIO_new(BIO_s_mem());
+	if (!anotherBio) {
+		fprintf(stderr, "BIO_new()\n");
+		exit(1);
+	}
+
+	rc = BIO_write(anotherBio, temp, SignedDataSize);
+	if (!rc) {
+		char errbuf[120];
+		unsigned long err = ERR_get_error();
+		ERR_error_string(err, errbuf);
+		printf("BIO_write: %s\n", errbuf);
+	}
+
+	PKCS7 *another = d2i_PKCS7_bio(anotherBio, NULL);
+	if (!Pkcs7) {
+		fprintf(stderr, "d2i_PKCS7()\n");
+		exit(1);
+	}
+
+	if (!PKCS7_type_is_signed(another)) {
+		fprintf(stderr, "PKCS7 data is not signed.  WTH?\n");
+		exit(1);
+	}
+
 	BIO *DataBio;
 	DataBio = BIO_new(BIO_s_mem());
-	int fd = open("tmp", O_CREAT|O_TRUNC|O_WRONLY);
-	write(fd, SpcIndirectDataContent, ContentSize);
-	close(fd);
 	BIO_write(DataBio, SpcIndirectDataContent, ContentSize);
 
-	ERR_load_PKCS7_strings();
-	ERR_load_crypto_strings();
-	int rc;
-	rc = PKCS7_verify(Pkcs7, NULL, CertStore, DataBio, NULL,
+	rc = PKCS7_verify(another, NULL, CertStore, DataBio, NULL,
 		PKCS7_BINARY
 //		|PKCS7_NOVERIFY
 //		|PKCS7_NOCHAIN
