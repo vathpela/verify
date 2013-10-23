@@ -93,7 +93,9 @@ main(int argc, char *argv[])
 		exit(1);
 	}
 
-	PKCS7 *Pkcs7 = make_pkcs7(&context, bin, sb.st_size);
+	uint8_t *cert = NULL;
+	size_t cert_size = 0;
+	PKCS7 *Pkcs7 = make_pkcs7(&context, &cert, &cert_size, bin, sb.st_size);
 
 	UINT8 sha256hash[32];
 
@@ -103,9 +105,8 @@ main(int argc, char *argv[])
 		exit(1);
 	}
 
-	CertStore->verify_cb = X509VerifyCb;
-	rc = verify_pkcs7(Pkcs7, sha256hash, 32);
-	if (rc < 0) {
+	rc = verify_pkcs7(Pkcs7, sha256hash, 32, cert, cert_size, CertStore);
+	if (!rc) {
 		fprintf(stderr, "verify failed!\n");
 		exit(1);
 	}

@@ -18,9 +18,11 @@ X509VerifyCb(int Status, X509_STORE_CTX *Context);
 
 extern PKCS7 *
 make_pkcs7(PE_COFF_LOADER_IMAGE_CONTEXT *context,
+	uint8_t **cert, size_t *cert_size,
 	uint8_t *bin, size_t size);
 
 extern int
-verify_pkcs7(PKCS7 *Pkcs7, uint8_t *ImageHash, size_t HashSize);
+verify_pkcs7(PKCS7 *Pkcs7, uint8_t *ImageHash, size_t HashSize,
+	uint8_t *cert, size_t cert_size, X509_STORE *CertStore);
 
 #endif /* CRYPTO_H */
