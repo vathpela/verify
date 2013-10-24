@@ -95,6 +95,11 @@ main(int argc, char *argv[])
 			break;
 		}
 
+		char errbuf[120];
+		unsigned long err = ERR_get_error();
+		ERR_error_string(err, errbuf);
+		printf("%s\n", errbuf);
+
 		munmap(cert, sb.st_size);
 		close(fd);
 	}
