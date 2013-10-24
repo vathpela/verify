@@ -1,1 +1,5 @@
 A very, very basic authenticode verifier.
+
+There's a copy of Cryptlib from tianocore.org in here, so it's subject to that version of the BSD license.
+
+It links against OpenSSL, so if you think about shipping this, you probably ought to talk about the ramifications of that with your lawyer.
