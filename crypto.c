@@ -19,6 +19,7 @@
 #include "wincert.h"
 
 static void
+__attribute__((unused))
 dumpbuf(void *buf, size_t len)
 {
 	int fd = open("tmp", O_CREAT|O_TRUNC|O_WRONLY, 0600);
@@ -27,6 +28,7 @@ dumpbuf(void *buf, size_t len)
 }
 
 void
+__attribute__((unused))
 print_hex(uint8_t *data, size_t data_size)
 {
 	for (unsigned int i = 0; i < data_size; i++)
@@ -34,6 +36,7 @@ print_hex(uint8_t *data, size_t data_size)
 	printf("\n");
 }
 
+#if 0
 UINT8 mOidValue[9] = { 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x07, 0x02 };
 
 /**
@@ -265,7 +268,7 @@ verify_pkcs7(PE_COFF_LOADER_IMAGE_CONTEXT *context,
 		exit(1);
 	}
 
-	rc = BIO_write(Pkcs7Bio, cert, cert_size);
+	rc = BIO_write(Pkcs7Bio, cert, cert_size-3);
 	if (!rc) {
 		char errbuf[120];
 		unsigned long err = ERR_get_error();
@@ -275,7 +278,10 @@ verify_pkcs7(PE_COFF_LOADER_IMAGE_CONTEXT *context,
 
 	PKCS7 *Pkcs7 = d2i_PKCS7_bio(Pkcs7Bio, NULL);
 	if (!Pkcs7) {
-		fprintf(stderr, "d2i_PKCS7()\n");
+		char errbuf[120];
+		unsigned long err = ERR_get_error();
+		ERR_error_string(err, errbuf);
+		printf("d2i_PKCS7: %s\n", errbuf);
 		exit(1);
 	}
 
@@ -340,7 +346,8 @@ verify_pkcs7(PE_COFF_LOADER_IMAGE_CONTEXT *context,
 		exit(1);
 	}
 
-	rc = BIO_write(anotherBio, temp, SignedDataSize);
+	dumpbuf(cert, cert_size-3);
+	rc = BIO_write(anotherBio, cert, cert_size-3);
 	if (!rc) {
 		char errbuf[120];
 		unsigned long err = ERR_get_error();
@@ -380,3 +387,4 @@ verify_pkcs7(PE_COFF_LOADER_IMAGE_CONTEXT *context,
 
 	return rc;
 }
+#endif

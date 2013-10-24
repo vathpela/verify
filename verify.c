@@ -16,7 +16,9 @@
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
+#include <Library/BaseCryptLib.h>
 
 #include "crypto.h"
 #include "pe.h"
@@ -38,55 +40,10 @@ main(int argc, char *argv[])
 	if (binfd < 0)
 		err(1, "verify: %s", argv[1]);
 
-	X509_STORE *CertStore = X509_STORE_new();
-	if (!CertStore) {
-		fprintf(stderr, "X509_STORE_new()\n");
-		exit(1);
-	}
-
-
-	for (int i = 2; argv[i] != NULL; i++) {
-		int fd = open(argv[i], O_RDONLY);
-		if (fd < 0)
-			err(1, "verify: %s", argv[i]);
-		printf("adding cert from \"%s\"\n", argv[i]);
-
-		uint8_t *cert;
-		struct stat sb;
-
-		fstat(fd, &sb);
-		cert = mmap(NULL, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-
-		BIO *CertBio = BIO_new(BIO_s_mem());
-		if (!CertBio) {
-			fprintf(stderr, "BIO_new()\n");
-			exit(1);
-		}
-
-		int rc = BIO_write (CertBio, cert, sb.st_size);
-		if (rc <= 0) {
-			fprintf(stderr, "BIO_write()\n");
-			exit(1);
-		}
-
-		munmap(cert, sb.st_size);
-		X509 *Cert = d2i_X509_bio(CertBio, NULL);
-		if (!Cert) {
-			fprintf(stderr, "d2i_X509_bio()\n");
-			exit(1);
-		}
-
-		if (!(X509_STORE_add_cert(CertStore, Cert))) {
-			fprintf(stderr, "X509_STORE_add_cert()\n");
-			exit(1);
-		}
-
-		close(fd);
-	}
-
 	struct stat sb;
 	fstat(binfd, &sb);
 	void *bin = mmap(NULL, sb.st_size, PROT_READ, MAP_PRIVATE, binfd, 0);
+	size_t bin_size = sb.st_size;
 
 	PE_COFF_LOADER_IMAGE_CONTEXT context;
 	int rc = read_header(bin, sb.st_size, &context);
@@ -102,12 +59,82 @@ main(int argc, char *argv[])
 		exit(1);
 	}
 
-	rc = verify_pkcs7(&context, bin, sb.st_size, sha256hash, 32, CertStore);
-	if (!rc) {
+	WIN_CERTIFICATE_EFI_PKCS *efi_pkcs = NULL;
+
+	if (context.SecDir->Size != 0) {
+		efi_pkcs = ImageAddress(bin, bin_size,
+				context.SecDir->VirtualAddress);
+		if (!efi_pkcs) {
+			fprintf(stderr, "signature is at invalid "
+					"offset\n");
+			exit(1);
+		}
+	}
+
+
+	int found = 0;
+	for (int i = 2; argv[i] != NULL; i++) {
+		int fd = open(argv[i], O_RDONLY);
+		if (fd < 0)
+			err(1, "verify: %s", argv[i]);
+		printf("adding cert from \"%s\"\n", argv[i]);
+
+		uint8_t *cert;
+		struct stat sb;
+
+		fstat(fd, &sb);
+		cert = mmap(NULL, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+		size_t cert_size = sb.st_size;
+		
+		rc = AuthenticodeVerify((UINT8 *)&efi_pkcs->CertData,
+				efi_pkcs->Hdr.dwLength - sizeof(efi_pkcs->Hdr),
+				cert, cert_size,
+				sha256hash, 32);
+		if (rc == 1) {
+			found = 1;
+			break;
+		}
+
+		munmap(cert, sb.st_size);
+		close(fd);
+	}
+
+	if (!found) {
 		fprintf(stderr, "verify failed!\n");
 		exit(1);
 	}
 	printf("Image verifies correctly\n");
 
 	return 0;
+}
+
+VOID
+CopyMem(VOID *Dest, VOID *Src, UINTN len)
+{
+	memcpy(Dest, Src, len);
+}
+
+INTN
+CompareMem(CONST VOID *Dest, CONST VOID *Src, UINTN len)
+{
+	return memcmp(Dest, Src, len);
+}
+
+VOID
+ZeroMem(VOID *Buffer, UINTN Size)
+{
+	memset(Buffer, '\0', Size);
+}
+
+INTN
+AsciiStrLen(CONST char *Str)
+{
+	return strlen(Str);
+}
+
+UINT32
+WriteUnaligned32(UINT32 *Buffer, UINT32 Value)
+{
+	*Buffer = Value;
+	return Value;
 }
